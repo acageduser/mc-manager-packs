@@ -8,7 +8,7 @@ from PySide6.QtWidgets import (
     QLabel, QTextEdit, QProgressBar, QLineEdit, QSpinBox, QCheckBox, QTreeWidget, QTreeWidgetItem,
     QMessageBox,
 )
-from PySide6.QtCore import Qt
+from PySide6.QtCore import Qt, QTimer
 
 # No tri-state: only Checked/Unchecked
 TRI_STATE = None
@@ -60,6 +60,11 @@ class MainWindow(QMainWindow):
         tabs.addTab(self._admin_tab(), "Admin")
         tabs.addTab(self._settings_tab(), "Settings")
         self.setCentralWidget(tabs)
+
+        # Auto-update on startup if enabled
+        if bool(self.s.get("auto_update", False)):
+            # kick off after the UI is ready
+            QTimer.singleShot(250, self._user_update_latest)
 
     # ========================= USER =========================
     def _user_tab(self):
@@ -452,8 +457,14 @@ class MainWindow(QMainWindow):
         row2.addWidget(self.edPath); row2.addWidget(btnFind)
         v.addLayout(row2)
 
-        self.cbDry = QCheckBox("Dry run (preview actions)"); self.cbDry.setChecked(bool(self.s.get("dry_run", False)))
+        self.cbDry = QCheckBox("Dry run (preview actions)")
+        self.cbDry.setChecked(bool(self.s.get("dry_run", False)))
         v.addWidget(self.cbDry)
+
+        # NEW: Automatic Update Mode
+        self.cbAuto = QCheckBox("Automatic Update Mode (run update on startup)")
+        self.cbAuto.setChecked(bool(self.s.get("auto_update", False)))
+        v.addWidget(self.cbAuto)
 
         row3 = QHBoxLayout()
         row3.addWidget(QLabel("Keep backups (count):"))
@@ -494,6 +505,7 @@ class MainWindow(QMainWindow):
         self.s["repo_name"]      = self.edRepo.text().strip()
         self.s["minecraft_path"] = self.edPath.text().strip()
         self.s["dry_run"]        = self.cbDry.isChecked()
+        self.s["auto_update"]    = self.cbAuto.isChecked()   # <— NEW
         self.s["keep_backups"]   = int(self.keepSpin.value())
         save_settings(self.s)
         self._flash_status(f"Saved settings to: {settings_store_location()}")
