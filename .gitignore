@@ -1,0 +1,53 @@
+# Python
+__pycache__/
+*.py[cod]
+*$py.class
+
+# C extensions
+*.pyd
+*.pyo
+*.so
+*.dll
+
+# Distribution / packaging
+.Python
+build/
+dist/
+*.egg-info/
+*.egg
+*.whl
+*.spec
+
+# Virtual environments
+.venv/
+venv/
+env/
+ENV/
+pythonenv*
+pip-wheel-metadata/
+
+# Unit test / coverage
+.pytest_cache/
+.coverage*
+.cache/
+.mypy_cache/
+htmlcov/
+
+# IDE / Editor
+.vscode/
+.idea/
+*.code-workspace
+
+# OS junk
+.DS_Store
+Thumbs.db
+desktop.ini
+
+# Logs
+*.log
+
+# App-specific
+out/            # local output folder created by the app when run from source
+
+# Generated archives (avoid committing built packs)
+*.zip
