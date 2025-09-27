@@ -33,7 +33,6 @@ available locally; publishing requires a PAT stored securely via **Windows DPAPI
 │     ├─ minecraft.py
 │     └─ threading_worker.py
 ├─ build.bat
-├─ build.ps1        (optional; BAT is preferred)
 ├─ requirements.txt
 └─ README.md
 ```
@@ -57,8 +56,7 @@ python app\main.py
 Double‑click **`build.bat`** (or run from a terminal):
 
 ```bat
-build.bat          # onefile exe (default)
-build.bat onefolder
+build.bat
 ```
 
 Output will appear in `dist\`.
@@ -112,4 +110,4 @@ First run creates `%LOCALAPPDATA%\MinecraftManager\settings.json`. Set:
 
 ## License
 
-MIT (or your preference).
+MIT
