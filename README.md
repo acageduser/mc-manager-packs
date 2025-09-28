@@ -1,6 +1,13 @@
 # Minecraft Manager (Python / PySide6)
 
-Windows 11 desktop app for managing and updating a shared `.minecraft` setup.
+Full GUI app for managing and updating a shared `.minecraft` setup. Useful for Minecraft server admins that want to easily pick exactly what files/folders/settings their players should have. ```SHA256``` protected downloads hosted on GitHub.
+
+## Why I made this
+
+There are a few decent 'auto updater' programs out there however they do not use very good security/safety features. I want to give my users and admins the chance to experience safe and easy server management.
+Users can set this up with 'Startup Apps' on a Windows machine to automatically grab any updates.
+Admins can take advantage of a full GUI ```.minecraft``` user folder managemnet.
+
 Single source of truth: **GitHub Releases**. Admin features (build & publish) are
 available locally; publishing requires a PAT stored securely via **Windows DPAPI**.
 
@@ -12,6 +19,19 @@ available locally; publishing requires a PAT stored securely via **Windows DPAPI
 - **Admin tab:** choose folders/files to include, build `minecraft-pack.zip` + `manifest.json`, and publish a GitHub Release (with live progress).
 - **Settings tab:** configure repo + paths and securely save a GitHub PAT (DPAPI).
 - Protected paths that are never touched when applying packs: `saves/`, `screenshots/`, `logs/`, `crash-reports/`.
+
+---
+
+---
+## Tabs:
+#### User:
+<img width="982" height="692" alt="image" src="https://github.com/user-attachments/assets/db71c61b-8c05-4873-83f3-c4da0cf7729b" />
+
+#### Admin:
+<img width="982" height="692" alt="image" src="https://github.com/user-attachments/assets/fa3691fe-3c9d-45e7-a617-08e30ff4c69e" />
+
+#### Settings:
+<img width="982" height="692" alt="image" src="https://github.com/user-attachments/assets/cf87ecc1-31b3-40ef-ac8a-71bf967925af" />
 
 ---
 
