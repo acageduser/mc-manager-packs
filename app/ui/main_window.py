@@ -63,7 +63,6 @@ class MainWindow(QMainWindow):
 
         # Auto-update on startup if enabled
         if bool(self.s.get("auto_update", False)):
-            # kick off after the UI is ready
             QTimer.singleShot(250, self._user_update_latest)
 
     # ========================= USER =========================
@@ -144,10 +143,20 @@ class MainWindow(QMainWindow):
         worker.started.connect(lambda: self.btnCancel.setEnabled(True))
 
         def done(mani):
-            if mani and not self.s.get("dry_run", False):
+            if mani and not dry:
+                # update local label (re-read settings to get the version the apply step persisted)
                 self.s = load_settings()
                 self.lblLocal.setText(f"Local: {self.s.get('last_applied_version') or '(unknown)'}")
-            self.btnCancel.setEnabled(False); self.progress.setValue(0)
+                # success signal requested
+                self._append_log("Update Complete!")
+
+                # Auto-close if enabled
+                if bool(self.s.get("auto_close", False)):
+                    self._append_log("[Info] Auto Close enabled — exiting…")
+                    QTimer.singleShot(1200, QApplication.instance().quit)
+
+            self.btnCancel.setEnabled(False)
+            self.progress.setValue(0)
 
         worker.finished.connect(done)
         th.finished.connect(lambda: th.deleteLater())
@@ -461,10 +470,15 @@ class MainWindow(QMainWindow):
         self.cbDry.setChecked(bool(self.s.get("dry_run", False)))
         v.addWidget(self.cbDry)
 
-        # NEW: Automatic Update Mode
+        # Automatic Update Mode
         self.cbAuto = QCheckBox("Automatic Update Mode (run update on startup)")
         self.cbAuto.setChecked(bool(self.s.get("auto_update", False)))
         v.addWidget(self.cbAuto)
+
+        # NEW: Auto Close after successful update
+        self.cbAutoClose = QCheckBox("Auto Close after successful update")
+        self.cbAutoClose.setChecked(bool(self.s.get("auto_close", False)))
+        v.addWidget(self.cbAutoClose)
 
         row3 = QHBoxLayout()
         row3.addWidget(QLabel("Keep backups (count):"))
@@ -505,7 +519,8 @@ class MainWindow(QMainWindow):
         self.s["repo_name"]      = self.edRepo.text().strip()
         self.s["minecraft_path"] = self.edPath.text().strip()
         self.s["dry_run"]        = self.cbDry.isChecked()
-        self.s["auto_update"]    = self.cbAuto.isChecked()   # <— NEW
+        self.s["auto_update"]    = self.cbAuto.isChecked()
+        self.s["auto_close"]     = self.cbAutoClose.isChecked()   # NEW
         self.s["keep_backups"]   = int(self.keepSpin.value())
         save_settings(self.s)
         self._flash_status(f"Saved settings to: {settings_store_location()}")

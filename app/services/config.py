@@ -39,7 +39,8 @@ def _default_settings() -> dict:
         "keep_backups": 3,
         "telemetry_enabled": False,
         "last_applied_version": "",
-        "auto_update": False,  # NEW: automatically update on app start when enabled
+        "auto_update": False,  # auto run update on startup
+        "auto_close":  False,  # NEW: close app after a successful update
         # saved selection for admin tree
         "include_selected": list(DEFAULT_CHECKED),
     }
