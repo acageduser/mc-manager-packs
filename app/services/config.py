@@ -39,8 +39,12 @@ def _default_settings() -> dict:
         "keep_backups": 3,
         "telemetry_enabled": False,
         "last_applied_version": "",
-        "auto_update": False,  # auto run update on startup
-        "auto_close":  False,  # NEW: close app after a successful update
+        # User automation
+        "auto_update": False,   # run User update on startup
+        "auto_close":  False,   # close app after successful update
+        # Admin automation
+        "auto_build":  False,   # build pack on startup
+        "auto_publish": False,  # publish to GitHub on startup (build first if needed)
         # saved selection for admin tree
         "include_selected": list(DEFAULT_CHECKED),
     }

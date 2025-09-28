@@ -1,13 +1,14 @@
 import os
 import json
 import time
-from typing import Dict, Any, Optional, Callable
+from typing import Dict, Any, Optional, Callable, List
 
 import requests
 
 from .config import load_settings, get_pat
 
 UA = {"User-Agent": "MinecraftManager/1.0"}
+
 
 # --------- Helpers ---------
 def _token_or_fail() -> str:
@@ -93,7 +94,7 @@ def sha256_file(path: str) -> str:
     return h.hexdigest()
 
 
-# --------- Publish (Admin tab) ---------
+# --------- Release helpers (Admin tab) ---------
 def _release_by_tag(owner: str, repo: str, tag: str) -> Optional[dict]:
     url = f"https://api.github.com/repos/{owner}/{repo}/releases/tags/{tag}"
     r = requests.get(url, headers=_auth_headers(), timeout=60)
@@ -101,6 +102,32 @@ def _release_by_tag(owner: str, repo: str, tag: str) -> Optional[dict]:
         return None
     r.raise_for_status()
     return r.json()
+
+
+def _list_releases(owner: str, repo: str) -> List[dict]:
+    # enough for typical usage; can be paginated later if needed
+    url = f"https://api.github.com/repos/{owner}/{repo}/releases?per_page=100"
+    r = requests.get(url, headers=_auth_headers(), timeout=60)
+    r.raise_for_status()
+    return r.json()
+
+
+def _delete_release(owner: str, repo: str, release_id: int):
+    url = f"https://api.github.com/repos/{owner}/{repo}/releases/{release_id}"
+    r = requests.delete(url, headers=_auth_headers(), timeout=60)
+    # 404 is fine (already gone)
+    if r.status_code not in (204, 404):
+        r.raise_for_status()
+
+
+def _delete_tag(owner: str, repo: str, tag: str):
+    if not tag:
+        return
+    url = f"https://api.github.com/repos/{owner}/{repo}/git/refs/tags/{tag}"
+    r = requests.delete(url, headers=_auth_headers(), timeout=60)
+    # 404 is fine (tag didn't exist)
+    if r.status_code not in (204, 404):
+        r.raise_for_status()
 
 
 def _create_release(owner: str, repo: str, tag: str, name: str, body: str = "") -> dict:
@@ -195,6 +222,38 @@ def _upload_asset(
     return r.json()
 
 
+def _prune_other_releases(owner: str, repo: str, keep_tag: str, log: Optional[Callable[[str], None]] = None):
+    """
+    Delete all releases (and their tags) whose tag_name != keep_tag.
+    This keeps the repo at exactly one release after publish.
+    """
+    try:
+        releases = _list_releases(owner, repo)
+    except Exception as e:
+        if log:
+            log(f"[CLEANUP] List releases failed: {e}")
+        return
+
+    for rel in releases:
+        tag = rel.get("tag_name") or ""
+        if tag == keep_tag:
+            continue
+        rid = rel.get("id")
+        if log:
+            log(f"[CLEANUP] Deleting old release: tag '{tag}' (id {rid})")
+        try:
+            _delete_release(owner, repo, int(rid))
+        except Exception as e:
+            if log:
+                log(f"[CLEANUP] Failed deleting release id {rid}: {e}")
+        # delete the tag reference too (best-effort)
+        try:
+            _delete_tag(owner, repo, tag)
+        except Exception as e:
+            if log:
+                log(f"[CLEANUP] Failed deleting tag '{tag}': {e}")
+
+
 def publish_pack(
     manifest_path: str,
     zip_path: str,
@@ -202,10 +261,11 @@ def publish_pack(
     progress: Optional[Callable[[float], None]] = None,
 ) -> str:
     """
-    Ensure a release exists (tag from manifest['version'] or timestamp) and upload:
-      - manifest.json
-      - minecraft-pack.zip
-    Emits progress from 0 → 1 if 'progress' is provided.
+    Keep only one release in the repo:
+      1) Determine target tag from manifest['version'] (or timestamp).
+      2) Delete any existing *other* releases and their tags.
+      3) Create (or reuse) the target release.
+      4) Upload manifest.json and minecraft-pack.zip with live progress.
     Returns the tag name used.
     """
     _token_or_fail()  # fail fast with a helpful message
@@ -220,6 +280,11 @@ def publish_pack(
     name = f"Pack v{tag}"
     if log:
         log(f"[RELEASE] Tag: {tag}")
+
+    # Prune any older releases so we keep only one
+    if log:
+        log("[CLEANUP] Ensuring only a single release exists (deleting older ones)…")
+    _prune_other_releases(owner, repo, keep_tag=tag, log=log)
 
     _stage(progress, 0.10)
     rel = _release_by_tag(owner, repo, tag)
@@ -240,7 +305,7 @@ def publish_pack(
         upload_url,
         manifest_path,
         "manifest.json",
-        "application/octet-stream",  # more reliable for GitHub asset uploads
+        "application/octet-stream",  # reliable for GitHub asset uploads
         progress=progress,
         start=0.10,
         end=0.35,

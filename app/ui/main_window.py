@@ -55,15 +55,23 @@ class MainWindow(QMainWindow):
         self._publish_thread = None
         self._last_pack = None  # (zip_path, manifest_path)
 
+        # internal flags to orchestrate admin auto-run and chaining
+        self._after_build_auto_publish = False
+        self._auto_admin_in_progress = False
+
         tabs = QTabWidget()
         tabs.addTab(self._user_tab(), "User")
         tabs.addTab(self._admin_tab(), "Admin")
         tabs.addTab(self._settings_tab(), "Settings")
         self.setCentralWidget(tabs)
 
-        # Auto-update on startup if enabled
+        # Auto-update on startup if enabled (User flow takes priority)
         if bool(self.s.get("auto_update", False)):
             QTimer.singleShot(250, self._user_update_latest)
+        else:
+            # Admin automation (skip if user auto-update is running to avoid conflicts)
+            if bool(self.s.get("auto_build", False)) or bool(self.s.get("auto_publish", False)):
+                QTimer.singleShot(500, self._auto_admin_run)
 
     # ========================= USER =========================
     def _user_tab(self):
@@ -144,17 +152,12 @@ class MainWindow(QMainWindow):
 
         def done(mani):
             if mani and not dry:
-                # update local label (re-read settings to get the version the apply step persisted)
                 self.s = load_settings()
                 self.lblLocal.setText(f"Local: {self.s.get('last_applied_version') or '(unknown)'}")
-                # success signal requested
                 self._append_log("Update Complete!")
-
-                # Auto-close if enabled
                 if bool(self.s.get("auto_close", False)):
                     self._append_log("[Info] Auto Close enabled — exiting…")
                     QTimer.singleShot(1200, QApplication.instance().quit)
-
             self.btnCancel.setEnabled(False)
             self.progress.setValue(0)
 
@@ -408,6 +411,19 @@ class MainWindow(QMainWindow):
         self._build_thread = None
         self._build_worker = None
 
+        # Auto-run close logic: if auto-build only (no auto-publish) and success
+        if not error and self._auto_admin_in_progress:
+            if bool(self.s.get("auto_build", False)) and not bool(self.s.get("auto_publish", False)):
+                if bool(self.s.get("auto_close", False)):
+                    self.adminLog.append("[Info] Auto Close enabled — exiting…")
+                    QTimer.singleShot(1200, QApplication.instance().quit)
+
+        # Chain to publish if requested and build succeeded
+        if not error and getattr(self, "_after_build_auto_publish", False):
+            self.adminLog.append("[AUTO] Build complete — starting publish…")
+            self._after_build_auto_publish = False
+            QTimer.singleShot(150, self._admin_publish)
+
     def _admin_publish(self):
         z_m = self._last_pack
         if not z_m:
@@ -445,12 +461,50 @@ class MainWindow(QMainWindow):
     def _admin_publish_cleanup(self, error: str | None = None):
         if error:
             self.adminLog.append(f"[ERROR] {error}")
+        else:
+            self.adminLog.append("[DONE] Publish Complete.")
         self.btnPublish.setEnabled(True)
         self.btnBuild.setEnabled(True)
         self.btnResetSel.setEnabled(True)
         self.adminProgress.setValue(0)
         self._publish_thread = None
         self._publish_worker = None
+
+        # Auto-run close logic: if auto admin run and success
+        if not error and self._auto_admin_in_progress and bool(self.s.get("auto_close", False)):
+            self.adminLog.append("[Info] Auto Close enabled — exiting…")
+            QTimer.singleShot(1200, QApplication.instance().quit)
+
+        # End of admin auto-run sequence
+        self._auto_admin_in_progress = False
+
+    # -------- Admin auto-run orchestrator --------
+    def _auto_admin_run(self):
+        self._auto_admin_in_progress = True
+
+        want_build = bool(self.s.get("auto_build", False))
+        want_publish = bool(self.s.get("auto_publish", False))
+
+        if not (want_build or want_publish):
+            self._auto_admin_in_progress = False
+            return
+
+        # If we want to publish but there's no pack yet, force a build first.
+        if want_publish and not self._last_pack:
+            z = os.path.join(self._out_dir(), "minecraft-pack.zip")
+            m = os.path.join(self._out_dir(), "manifest.json")
+            if not (os.path.exists(z) and os.path.exists(m)):
+                want_build = True
+                self._after_build_auto_publish = True
+            else:
+                self._last_pack = (z, m)
+
+        if want_build:
+            self.adminLog.append("[AUTO] Starting automatic Build Pack…")
+            self._admin_build_pack()
+        elif want_publish:
+            self.adminLog.append("[AUTO] Starting automatic Publish to GitHub Release…")
+            self._admin_publish()
 
     # ======================== SETTINGS ========================
     def _settings_tab(self):
@@ -470,15 +524,23 @@ class MainWindow(QMainWindow):
         self.cbDry.setChecked(bool(self.s.get("dry_run", False)))
         v.addWidget(self.cbDry)
 
-        # Automatic Update Mode
+        # Automatic Update Mode (User)
         self.cbAuto = QCheckBox("Automatic Update Mode (run update on startup)")
         self.cbAuto.setChecked(bool(self.s.get("auto_update", False)))
         v.addWidget(self.cbAuto)
 
-        # NEW: Auto Close after successful update
-        self.cbAutoClose = QCheckBox("Auto Close after successful update")
+        # Auto Close after successful update / admin auto tasks
+        self.cbAutoClose = QCheckBox("Auto Close after successful task (User/Admin)")
         self.cbAutoClose.setChecked(bool(self.s.get("auto_close", False)))
         v.addWidget(self.cbAutoClose)
+
+        # --- Admin automation toggles ---
+        self.cbAutoBuild   = QCheckBox("Auto Build Pack on startup (admin)")
+        self.cbAutoPublish = QCheckBox("Auto Publish to GitHub Release on startup (admin)")
+        self.cbAutoBuild.setChecked(bool(self.s.get("auto_build", False)))
+        self.cbAutoPublish.setChecked(bool(self.s.get("auto_publish", False)))
+        v.addWidget(self.cbAutoBuild)
+        v.addWidget(self.cbAutoPublish)
 
         row3 = QHBoxLayout()
         row3.addWidget(QLabel("Keep backups (count):"))
@@ -519,8 +581,12 @@ class MainWindow(QMainWindow):
         self.s["repo_name"]      = self.edRepo.text().strip()
         self.s["minecraft_path"] = self.edPath.text().strip()
         self.s["dry_run"]        = self.cbDry.isChecked()
+        # User automation
         self.s["auto_update"]    = self.cbAuto.isChecked()
-        self.s["auto_close"]     = self.cbAutoClose.isChecked()   # NEW
+        self.s["auto_close"]     = self.cbAutoClose.isChecked()
+        # Admin automation
+        self.s["auto_build"]     = self.cbAutoBuild.isChecked()
+        self.s["auto_publish"]   = self.cbAutoPublish.isChecked()
         self.s["keep_backups"]   = int(self.keepSpin.value())
         save_settings(self.s)
         self._flash_status(f"Saved settings to: {settings_store_location()}")
