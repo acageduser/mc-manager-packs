@@ -6,7 +6,7 @@ import zipfile
 from PySide6.QtWidgets import (
     QApplication, QMainWindow, QWidget, QTabWidget, QVBoxLayout, QHBoxLayout, QPushButton,
     QLabel, QTextEdit, QProgressBar, QLineEdit, QSpinBox, QCheckBox, QTreeWidget, QTreeWidgetItem,
-    QMessageBox,
+    QMessageBox, QComboBox,
 )
 from PySide6.QtCore import Qt, QTimer
 
@@ -47,31 +47,78 @@ class MainWindow(QMainWindow):
         self.setWindowTitle("Minecraft Manager")
         self.resize(980, 660)
         self.s = load_settings()
-        self._worker = None           # user tab worker
-        self._task = None             # user tab thread
-        self._build_worker = None     # admin build worker (keep refs!)
+
+        # workers/threads
+        self._worker = None
+        self._task = None
+        self._build_worker = None
         self._build_thread = None
-        self._publish_worker = None   # admin publish worker (keep refs!)
+        self._publish_worker = None
         self._publish_thread = None
         self._last_pack = None  # (zip_path, manifest_path)
 
-        # internal flags to orchestrate admin auto-run and chaining
-        self._after_build_auto_publish = False
-        self._auto_admin_in_progress = False
+        # ---- tiny action queue for startup automation ----
+        # actions: "user_update", "admin_build", "admin_publish", "close"
+        self._action_queue: list[str] = []
+        self._current_action: str | None = None
 
         tabs = QTabWidget()
         tabs.addTab(self._user_tab(), "User")
         tabs.addTab(self._admin_tab(), "Admin")
         tabs.addTab(self._settings_tab(), "Settings")
+
+        # remember tabs and honor preferred start screen
+        self.tabs = tabs
+        start = str(self.s.get("start_tab", "user")).lower()
+        self.tabs.setCurrentIndex(1 if start == "admin" else 0)
+
         self.setCentralWidget(tabs)
 
-        # Auto-update on startup if enabled (User flow takes priority)
+        # build & run startup queue after UI is ready
+        QTimer.singleShot(250, self._schedule_startup_actions)
+
+    # ---------------- Action queue ----------------
+    def _schedule_startup_actions(self):
+        self._action_queue.clear()
+
         if bool(self.s.get("auto_update", False)):
-            QTimer.singleShot(250, self._user_update_latest)
+            self._action_queue.append("user_update")
         else:
-            # Admin automation (skip if user auto-update is running to avoid conflicts)
-            if bool(self.s.get("auto_build", False)) or bool(self.s.get("auto_publish", False)):
-                QTimer.singleShot(500, self._auto_admin_run)
+            if bool(self.s.get("auto_build", False)):
+                self._action_queue.append("admin_build")
+            if bool(self.s.get("auto_publish", False)):
+                self._action_queue.append("admin_publish")
+
+        if bool(self.s.get("auto_close", False)) and self._action_queue:
+            self._action_queue.append("close")
+
+        if self._action_queue:
+            self._run_next_action()
+
+    def _run_next_action(self):
+        if not self._action_queue:
+            self._current_action = None
+            return
+        self._current_action = self._action_queue.pop(0)
+        act = self._current_action
+        if act == "user_update":
+            self._user_update_latest()
+        elif act == "admin_build":
+            self._admin_build_pack()
+        elif act == "admin_publish":
+            self._admin_publish()
+        elif act == "close":
+            QTimer.singleShot(400, QApplication.instance().quit)
+        else:
+            self._run_next_action()
+
+    def _action_done(self, success: bool):
+        if not success:
+            # stop the chain on failure
+            self._action_queue.clear()
+            self._current_action = None
+            return
+        self._run_next_action()
 
     # ========================= USER =========================
     def _user_tab(self):
@@ -147,7 +194,7 @@ class MainWindow(QMainWindow):
         self._task, self._worker = th, worker
         worker.message.connect(self._append_log)
         worker.progressed.connect(lambda p: self.progress.setValue(int(p*100)))
-        worker.failed.connect(lambda e: self._append_log(f"[ERROR] {e}"))
+        worker.failed.connect(lambda e: (self._append_log(f"[ERROR] {e}"), self._action_done(False)))
         worker.started.connect(lambda: self.btnCancel.setEnabled(True))
 
         def done(mani):
@@ -155,9 +202,11 @@ class MainWindow(QMainWindow):
                 self.s = load_settings()
                 self.lblLocal.setText(f"Local: {self.s.get('last_applied_version') or '(unknown)'}")
                 self._append_log("Update Complete!")
-                if bool(self.s.get("auto_close", False)):
+                if bool(self.s.get("auto_close", False)) and not self._action_queue:
                     self._append_log("[Info] Auto Close enabled — exiting…")
                     QTimer.singleShot(1200, QApplication.instance().quit)
+                if self._current_action == "user_update":
+                    self._action_done(True)
             self.btnCancel.setEnabled(False)
             self.progress.setValue(0)
 
@@ -203,7 +252,7 @@ class MainWindow(QMainWindow):
         row2.addWidget(self.btnResetSel)
         v.addLayout(row2)
 
-        # Build/publish progress (shared bar)
+        # Shared progress bar
         self.adminProgress = QProgressBar(); self.adminProgress.setValue(0)
         v.addWidget(self.adminProgress)
 
@@ -290,34 +339,23 @@ class MainWindow(QMainWindow):
         self._recompute_parent_chain(item)
 
     def _selected_paths(self):
-        """
-        Minimal include list:
-        - If a folder is Checked, include just that folder path.
-        - Otherwise include individual checked entries under it.
-        """
         out = set()
-
         def walk(node: QTreeWidgetItem, parent_included: bool = False):
             for i in range(node.childCount()):
                 ch = node.child(i)
                 if ch.isDisabled():
-                    walk(ch, parent_included)
-                    continue
+                    walk(ch, parent_included); continue
                 rel = ch.text(0)
                 checked = (ch.checkState(0) == Qt.Checked)
-
                 if checked and not parent_included:
-                    out.add(rel)
-                    walk(ch, True)   # parent included; skip descendants
+                    out.add(rel); walk(ch, True)
                 else:
                     walk(ch, parent_included or checked)
-
         for i in range(self.tree.topLevelItemCount()):
             walk(self.tree.topLevelItem(i))
         return sorted(out)
 
     def _out_dir(self) -> str:
-        """Create/use out/ next to the running app (exe or source)."""
         base = os.path.dirname(sys.executable) if getattr(sys, "frozen", False) else os.getcwd()
         out_dir = os.path.join(base, "out")
         os.makedirs(out_dir, exist_ok=True)
@@ -331,17 +369,12 @@ class MainWindow(QMainWindow):
         self.adminLog.append(f"[SAVED AT] {settings_store_location()}")
 
     def _admin_reset_selection(self):
-        # Confirmation dialog (only for Reset)
         reply = QMessageBox.question(
-            self,
-            "Confirm Reset",
-            "Are you sure you want to reset the Pack?",
-            QMessageBox.Yes | QMessageBox.No,
-            QMessageBox.No,
+            self, "Confirm Reset", "Are you sure you want to reset the Pack?",
+            QMessageBox.Yes | QMessageBox.No, QMessageBox.No,
         )
         if reply != QMessageBox.Yes:
-            self.adminLog.append("[CANCELLED] Reset Pack.")
-            return
+            self.adminLog.append("[CANCELLED] Reset Pack."); return
 
         self.tree.blockSignals(True)
         for i in range(self.tree.topLevelItemCount()):
@@ -411,18 +444,9 @@ class MainWindow(QMainWindow):
         self._build_thread = None
         self._build_worker = None
 
-        # Auto-run close logic: if auto-build only (no auto-publish) and success
-        if not error and self._auto_admin_in_progress:
-            if bool(self.s.get("auto_build", False)) and not bool(self.s.get("auto_publish", False)):
-                if bool(self.s.get("auto_close", False)):
-                    self.adminLog.append("[Info] Auto Close enabled — exiting…")
-                    QTimer.singleShot(1200, QApplication.instance().quit)
-
-        # Chain to publish if requested and build succeeded
-        if not error and getattr(self, "_after_build_auto_publish", False):
-            self.adminLog.append("[AUTO] Build complete — starting publish…")
-            self._after_build_auto_publish = False
-            QTimer.singleShot(150, self._admin_publish)
+        # queue chaining: if we were in "admin_build", continue (or stop on error)
+        if self._current_action == "admin_build":
+            self._action_done(success=(error is None))
 
     def _admin_publish(self):
         z_m = self._last_pack
@@ -470,41 +494,9 @@ class MainWindow(QMainWindow):
         self._publish_thread = None
         self._publish_worker = None
 
-        # Auto-run close logic: if auto admin run and success
-        if not error and self._auto_admin_in_progress and bool(self.s.get("auto_close", False)):
-            self.adminLog.append("[Info] Auto Close enabled — exiting…")
-            QTimer.singleShot(1200, QApplication.instance().quit)
-
-        # End of admin auto-run sequence
-        self._auto_admin_in_progress = False
-
-    # -------- Admin auto-run orchestrator --------
-    def _auto_admin_run(self):
-        self._auto_admin_in_progress = True
-
-        want_build = bool(self.s.get("auto_build", False))
-        want_publish = bool(self.s.get("auto_publish", False))
-
-        if not (want_build or want_publish):
-            self._auto_admin_in_progress = False
-            return
-
-        # If we want to publish but there's no pack yet, force a build first.
-        if want_publish and not self._last_pack:
-            z = os.path.join(self._out_dir(), "minecraft-pack.zip")
-            m = os.path.join(self._out_dir(), "manifest.json")
-            if not (os.path.exists(z) and os.path.exists(m)):
-                want_build = True
-                self._after_build_auto_publish = True
-            else:
-                self._last_pack = (z, m)
-
-        if want_build:
-            self.adminLog.append("[AUTO] Starting automatic Build Pack…")
-            self._admin_build_pack()
-        elif want_publish:
-            self.adminLog.append("[AUTO] Starting automatic Publish to GitHub Release…")
-            self._admin_publish()
+        # queue chaining: if we were in "admin_publish", continue (or stop on error)
+        if self._current_action == "admin_publish":
+            self._action_done(success=(error is None))
 
     # ======================== SETTINGS ========================
     def _settings_tab(self):
@@ -520,6 +512,17 @@ class MainWindow(QMainWindow):
         row2.addWidget(self.edPath); row2.addWidget(btnFind)
         v.addLayout(row2)
 
+        # NEW: Start screen preference
+        rowStart = QHBoxLayout()
+        rowStart.addWidget(QLabel("Start screen:"))
+        self.startTab = QComboBox()
+        self.startTab.addItems(["User", "Admin"])
+        current = "Admin" if str(self.s.get("start_tab", "user")).lower() == "admin" else "User"
+        self.startTab.setCurrentText(current)
+        rowStart.addWidget(self.startTab); rowStart.addStretch(1)
+        v.addLayout(rowStart)
+
+
         self.cbDry = QCheckBox("Dry run (preview actions)")
         self.cbDry.setChecked(bool(self.s.get("dry_run", False)))
         v.addWidget(self.cbDry)
@@ -529,7 +532,7 @@ class MainWindow(QMainWindow):
         self.cbAuto.setChecked(bool(self.s.get("auto_update", False)))
         v.addWidget(self.cbAuto)
 
-        # Auto Close after successful update / admin auto tasks
+        # Auto Close after successful update / admin queue
         self.cbAutoClose = QCheckBox("Auto Close after successful task (User/Admin)")
         self.cbAutoClose.setChecked(bool(self.s.get("auto_close", False)))
         v.addWidget(self.cbAutoClose)
@@ -588,5 +591,13 @@ class MainWindow(QMainWindow):
         self.s["auto_build"]     = self.cbAutoBuild.isChecked()
         self.s["auto_publish"]   = self.cbAutoPublish.isChecked()
         self.s["keep_backups"]   = int(self.keepSpin.value())
+
+        # NEW: start tab
+        self.s["start_tab"] = "admin" if self.startTab.currentText().lower() == "admin" else "user"
+
         save_settings(self.s)
         self._flash_status(f"Saved settings to: {settings_store_location()}")
+
+        # reflect immediately
+        if hasattr(self, "tabs"):
+            self.tabs.setCurrentIndex(1 if self.s["start_tab"] == "admin" else 0)
